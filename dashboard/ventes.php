@@ -43,7 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enregistrer_vente']))
     
     // Enregistrer la vente
     $stmt = $db->prepare("
-        INSERT INTO ventes (medicament_id, quantite, prix_unitaire, total, client_nom, vendeur_id, notes)
+        INSERT INTO ventes (medicament_id, quantite, prix_unitaire, total, client_nom, vendeur_id )
         VALUES (?, ?, ?, ?, ?, ?, ?)
     ");
     
@@ -52,9 +52,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enregistrer_vente']))
         $quantite,
         $prix_unitaire,
         $total,
-        $client_nom,
-        $_SESSION['user_id'],
-        $notes
+        $client_nom
+       
     ]);
     
     if ($success) {

@@ -26,7 +26,7 @@ if (!file_exists($upload_dir)) {
 }
 
 // Chemin de ta photo
-$ma_photo = '../assets/images/Q.jpg';
+$ma_photo = '../assets/images/m.jpeg';
 $photo_existe = file_exists($ma_photo);
 
 // Traitement modification informations
