@@ -25,7 +25,15 @@ if (!file_exists($upload_dir)) {
     mkdir($upload_dir, 0777, true);
 }
 
+<<<<<<< HEAD:dashboard/profiles.php
 // Traitement modification des informations
+=======
+// Chemin de ta photo
+$ma_photo = '../assets/images/m.jpeg';
+$photo_existe = file_exists($ma_photo);
+
+// Traitement modification informations
+>>>>>>> c0632edd0d60949a939eabed439ce099d0a5c175:dashboard/profile.php
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modifier'])) {
     $prenom = trim($_POST['prenom']);
     $nom = trim($_POST['nom']);
