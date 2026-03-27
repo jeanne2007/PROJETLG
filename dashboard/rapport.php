@@ -7,6 +7,10 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
+// 🔐 Vérifier que l'utilisateur est ADMIN
+require_once '../includes/check_role.php';
+checkAdmin(); // Seul l'admin peut accéder aux rapports
+
 require_once '../config/database.php';
 require_once '../includes/functions.php';
 
@@ -31,10 +35,14 @@ if ($periode === 'jour') {
     
     // Ventes du jour
     $stmt = $db->prepare("
-        SELECT v.*, m.nom as medicament_nom 
+        SELECT v.*, 
+               GROUP_CONCAT(m.nom SEPARATOR ', ') as medicaments,
+               COUNT(vl.id) as nb_produits
         FROM ventes v 
-        LEFT JOIN medicaments m ON v.medicament_id = m.id 
+        LEFT JOIN ventes_lignes vl ON v.id = vl.vente_id
+        LEFT JOIN medicaments m ON vl.medicament_id = m.id 
         WHERE DATE(v.date_vente) = ?
+        GROUP BY v.id
         ORDER BY v.date_vente DESC
     ");
     $stmt->execute([$date]);
@@ -44,11 +52,12 @@ if ($periode === 'jour') {
     $stmt = $db->prepare("
         SELECT 
             COUNT(*) as nb_ventes,
-            SUM(total) as chiffre_affaires,
+            SUM(total_global) as chiffre_affaires,
             COUNT(DISTINCT client_nom) as nb_clients,
-            SUM(quantite) as total_quantite
-        FROM ventes 
-        WHERE DATE(date_vente) = ?
+            SUM(vl.quantite) as total_quantite
+        FROM ventes v
+        LEFT JOIN ventes_lignes vl ON v.id = vl.vente_id
+        WHERE DATE(v.date_vente) = ?
     ");
     $stmt->execute([$date]);
     $stats = $stmt->fetch();
@@ -59,20 +68,21 @@ if ($periode === 'jour') {
 } elseif ($periode === 'semaine') {
     // Calculer début et fin de semaine
     $date_obj = new DateTime($date);
-    $debut_semaine = $date_obj->modify('this week')->format('Y-m-d');
+    $debut_semaine = $date_obj->modify('monday this week')->format('Y-m-d');
     $fin_semaine = $date_obj->modify('+6 days')->format('Y-m-d');
     $titre_periode = "Semaine du " . date('d/m/Y', strtotime($debut_semaine)) . " au " . date('d/m/Y', strtotime($fin_semaine));
     
     // Par jour de la semaine
     $stmt = $db->prepare("
         SELECT 
-            DATE(date_vente) as jour,
-            COUNT(*) as nb_ventes,
-            SUM(total) as chiffre_affaires,
-            SUM(quantite) as total_quantite
-        FROM ventes 
-        WHERE DATE(date_vente) BETWEEN ? AND ?
-        GROUP BY DATE(date_vente)
+            DATE(v.date_vente) as jour,
+            COUNT(DISTINCT v.id) as nb_ventes,
+            SUM(v.total_global) as chiffre_affaires,
+            SUM(vl.quantite) as total_quantite
+        FROM ventes v
+        LEFT JOIN ventes_lignes vl ON v.id = vl.vente_id
+        WHERE DATE(v.date_vente) BETWEEN ? AND ?
+        GROUP BY DATE(v.date_vente)
         ORDER BY jour
     ");
     $stmt->execute([$debut_semaine, $fin_semaine]);
@@ -81,10 +91,10 @@ if ($periode === 'jour') {
     // Total semaine
     $stmt = $db->prepare("
         SELECT 
-            COUNT(*) as nb_ventes,
-            SUM(total) as chiffre_affaires
-        FROM ventes 
-        WHERE DATE(date_vente) BETWEEN ? AND ?
+            COUNT(DISTINCT v.id) as nb_ventes,
+            SUM(v.total_global) as chiffre_affaires
+        FROM ventes v
+        WHERE DATE(v.date_vente) BETWEEN ? AND ?
     ");
     $stmt->execute([$debut_semaine, $fin_semaine]);
     $stats = $stmt->fetch();
@@ -95,18 +105,19 @@ if ($periode === 'jour') {
 } elseif ($periode === 'mois') {
     $mois_debut = $mois . '-01';
     $mois_fin = date('Y-m-t', strtotime($mois_debut));
-    $titre_periode = date('F Y', strtotime($mois_debut));
+    $titre_periode = strftime('%B %Y', strtotime($mois_debut));
     
     // Par jour du mois
     $stmt = $db->prepare("
         SELECT 
-            DATE(date_vente) as jour,
-            COUNT(*) as nb_ventes,
-            SUM(total) as chiffre_affaires,
-            SUM(quantite) as total_quantite
-        FROM ventes 
-        WHERE DATE(date_vente) BETWEEN ? AND ?
-        GROUP BY DATE(date_vente)
+            DATE(v.date_vente) as jour,
+            COUNT(DISTINCT v.id) as nb_ventes,
+            SUM(v.total_global) as chiffre_affaires,
+            SUM(vl.quantite) as total_quantite
+        FROM ventes v
+        LEFT JOIN ventes_lignes vl ON v.id = vl.vente_id
+        WHERE DATE(v.date_vente) BETWEEN ? AND ?
+        GROUP BY DATE(v.date_vente)
         ORDER BY jour
     ");
     $stmt->execute([$mois_debut, $mois_fin]);
@@ -115,11 +126,11 @@ if ($periode === 'jour') {
     // Total mois
     $stmt = $db->prepare("
         SELECT 
-            COUNT(*) as nb_ventes,
-            SUM(total) as chiffre_affaires,
-            AVG(total) as panier_moyen
-        FROM ventes 
-        WHERE DATE(date_vente) BETWEEN ? AND ?
+            COUNT(DISTINCT v.id) as nb_ventes,
+            SUM(v.total_global) as chiffre_affaires,
+            AVG(v.total_global) as panier_moyen
+        FROM ventes v
+        WHERE DATE(v.date_vente) BETWEEN ? AND ?
     ");
     $stmt->execute([$mois_debut, $mois_fin]);
     $stats = $stmt->fetch();
@@ -128,15 +139,72 @@ if ($periode === 'jour') {
     $total_ca = $stats['chiffre_affaires'] ?? 0;
 }
 
+// --- ANALYSES AVANCÉES ---
+
+// 1. Mois le plus rentable
+$stmt = $db->query("
+    SELECT 
+        DATE_FORMAT(date_vente, '%Y-%m') as mois,
+        SUM(total_global) as total
+    FROM ventes
+    GROUP BY mois
+    ORDER BY total DESC
+    LIMIT 1
+");
+$mois_rentable = $stmt->fetch();
+
+// 2. Médicament le plus vendu
+$stmt = $db->query("
+    SELECT 
+        m.nom,
+        SUM(vl.quantite) as total_vendu,
+        SUM(vl.total_ligne) as chiffre_affaires
+    FROM ventes_lignes vl
+    LEFT JOIN medicaments m ON vl.medicament_id = m.id
+    GROUP BY vl.medicament_id
+    ORDER BY total_vendu DESC
+    LIMIT 1
+");
+$top_medicament = $stmt->fetch();
+
+// 3. Performance des vendeurs (avec tous les employés)
+$stmt = $db->query("
+    SELECT 
+        u.id,
+        u.prenom,
+        u.nom,
+        COUNT(DISTINCT v.id) as nb_ventes,
+        COALESCE(SUM(v.total_global), 0) as total_ca,
+        COALESCE(AVG(v.total_global), 0) as panier_moyen
+    FROM utilisateurs u
+    LEFT JOIN ventes v ON u.id = v.vendeur_id
+    WHERE u.role IN ('admin', 'employe')
+    GROUP BY u.id
+    ORDER BY total_ca DESC
+");
+$performance_vendeurs = $stmt->fetchAll();
+
+// 4. Ventes par mois pour graphique global (gardé pour compatibilité)
+$stmt = $db->query("
+    SELECT 
+        DATE_FORMAT(date_vente, '%Y-%m') as mois,
+        SUM(total_global) as total
+    FROM ventes
+    GROUP BY mois
+    ORDER BY mois DESC
+    LIMIT 12
+");
+$ventes_mensuelles = $stmt->fetchAll();
+
 // Top 5 médicaments
 $stmt = $db->prepare("
     SELECT 
         m.nom,
-        SUM(v.quantite) as total_vendu,
-        SUM(v.total) as chiffre_affaires
-    FROM ventes v
-    LEFT JOIN medicaments m ON v.medicament_id = m.id
-    GROUP BY v.medicament_id
+        SUM(vl.quantite) as total_vendu,
+        SUM(vl.total_ligne) as chiffre_affaires
+    FROM ventes_lignes vl
+    LEFT JOIN medicaments m ON vl.medicament_id = m.id
+    GROUP BY vl.medicament_id
     ORDER BY total_vendu DESC
     LIMIT 5
 ");
@@ -163,7 +231,6 @@ $alertes_stock = $stmt->fetchAll();
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rapports - LG PHARMA</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
             --primary: #3b82f6;
@@ -193,7 +260,7 @@ $alertes_stock = $stmt->fetchAll();
             min-height: 100vh;
         }
         
-        /* SIDEBAR (identique) */
+        /* SIDEBAR */
         .sidebar {
             width: 260px;
             background: white;
@@ -370,7 +437,7 @@ $alertes_stock = $stmt->fetchAll();
             border: 1px solid var(--primary);
         }
         
-        /* STATS GRID */
+        /* STATS GRID PRINCIPALE */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -415,6 +482,51 @@ $alertes_stock = $stmt->fetchAll();
             color: var(--gray);
         }
         
+        /* GRILLE ANALYSES */
+        .analytics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+        
+        .analytics-card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            border-left: 4px solid var(--primary);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            transition: all 0.3s;
+        }
+        
+        .analytics-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+        }
+        
+        .analytics-card h3 {
+            color: var(--gray);
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .analytics-card .value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--dark);
+            margin-bottom: 5px;
+        }
+        
+        .analytics-card .sub {
+            color: var(--gray);
+            font-size: 14px;
+        }
+        
         /* GRID 2 COLONNES */
         .two-columns {
             display: grid;
@@ -447,12 +559,6 @@ $alertes_stock = $stmt->fetchAll();
             display: flex;
             align-items: center;
             gap: 10px;
-        }
-        
-        /* CHART */
-        .chart-container {
-            height: 300px;
-            position: relative;
         }
         
         /* TABLE */
@@ -496,9 +602,35 @@ $alertes_stock = $stmt->fetchAll();
             color: #92400e;
         }
         
+        .badge-success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        
+        /* BARRE DE PROGRÈS */
+        .progress-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .progress-bar .bar {
+            width: 100px;
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .progress-bar .fill {
+            height: 8px;
+            background: var(--primary);
+            border-radius: 4px;
+        }
+        
         /* RESPONSIVE */
         @media (max-width: 1024px) {
-            .two-columns {
+            .two-columns, .analytics-grid {
                 grid-template-columns: 1fr;
             }
             
@@ -533,14 +665,6 @@ $alertes_stock = $stmt->fetchAll();
                 grid-template-columns: 1fr;
             }
         }
-        
-        /* EXPORT */
-        .export-options {
-            display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-            margin-bottom: 20px;
-        }
     </style>
 </head>
 <body>
@@ -555,25 +679,41 @@ $alertes_stock = $stmt->fetchAll();
             </div>
             
             <nav class="sidebar-nav">
-                <a href="index.php" class="nav-item">
+                <a href="indexs.php" class="nav-item">
                     <i class="fas fa-home"></i>
                     <span class="nav-text">Tableau de bord</span>
                 </a>
-                <a href="medicaments.php" class="nav-item">
+                <a href="medicament.php" class="nav-item">
                     <i class="fas fa-capsules"></i>
                     <span class="nav-text">Médicaments</span>
                 </a>
-                <a href="ventes.php" class="nav-item">
+                <a href="vente.php" class="nav-item">
                     <i class="fas fa-shopping-cart"></i>
                     <span class="nav-text">Ventes</span>
                 </a>
-                <a href="rapports.php" class="nav-item active">
+                <a href="rapport.php" class="nav-item active">
                     <i class="fas fa-chart-bar"></i>
                     <span class="nav-text">Rapports</span>
                 </a>
-                <a href="profile.php" class="nav-item">
+                <a href="profiles.php" class="nav-item">
                     <i class="fas fa-user-cog"></i>
                     <span class="nav-text">Mon profil</span>
+                </a>
+                <a href="parametre.php" class="nav-item">
+                    <i class="fas fa-cog"></i>
+                    <span class="nav-text">Paramètres</span>
+                </a>
+                <a href="utilisateur.php" class="nav-item">
+                    <i class="fas fa-users"></i>
+                    <span class="nav-text">Utilisateurs</span>
+                </a>
+                <a href="journals.php" class="nav-item">
+                    <i class="fas fa-history"></i>
+                    <span class="nav-text">Journal</span>
+                </a>
+                <a href="alerte.php" class="nav-item">
+                    <i class="fas fa-bell"></i>
+                    <span class="nav-text">Alertes</span>
                 </a>
             </nav>
             
@@ -630,7 +770,7 @@ $alertes_stock = $stmt->fetchAll();
                 </form>
             </div>
             
-            <!-- Stats résumé -->
+            <!-- Stats résumé de la période sélectionnée -->
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-icon blue">
@@ -665,171 +805,223 @@ $alertes_stock = $stmt->fetchAll();
                 </div>
             </div>
             
-            <!-- Graphique et Top médicaments -->
-            <div class="two-columns">
-                <!-- Graphique -->
-                <div class="dashboard-box">
-                    <div class="box-header">
-                        <h3 class="box-title">
-                            <i class="fas fa-chart-line"></i>
-                            Évolution des ventes - <?php echo $titre_periode; ?>
-                        </h3>
+            <!-- ANALYSES CLÉS (mois rentable + top médicament) -->
+            <div class="analytics-grid">
+                <div class="analytics-card">
+                    <h3><i class="fas fa-calendar-alt"></i> Mois le plus rentable</h3>
+                    <div class="value">
+                        <?php 
+                        if ($mois_rentable) {
+                            $annee = substr($mois_rentable['mois'], 0, 4);
+                            $mois_num = substr($mois_rentable['mois'], 5, 2);
+                            $mois_noms = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+                            echo $mois_noms[$mois_num - 1] . ' ' . $annee;
+                        } else {
+                            echo 'Aucune vente';
+                        }
+                        ?>
                     </div>
-                    <div class="chart-container">
-                        <canvas id="ventesChart"></canvas>
+                    <div class="sub">
+                        <?php echo $mois_rentable ? number_format($mois_rentable['total'], 0, ',', ' ') . ' FCFA' : ''; ?>
                     </div>
                 </div>
                 
-                <!-- Top médicaments -->
-                <div class="dashboard-box">
-                    <div class="box-header">
-                        <h3 class="box-title">
-                            <i class="fas fa-trophy"></i>
-                            Top 5 médicaments
-                        </h3>
+                <div class="analytics-card">
+                    <h3><i class="fas fa-capsules"></i> Médicament le plus vendu</h3>
+                    <div class="value">
+                        <?php echo $top_medicament ? htmlspecialchars($top_medicament['nom']) : 'Aucune vente'; ?>
                     </div>
-                    <table class="simple-table">
-                        <thead>
-                            <tr>
-                                <th>Médicament</th>
-                                <th>Vendu</th>
-                                <th>CA</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (empty($top_medicaments)): ?>
-                                <tr>
-                                    <td colspan="3" style="text-align: center; color: var(--gray); padding: 20px;">
-                                        Aucune donnée disponible
-                                    </td>
-                                </tr>
-                            <?php else: ?>
-                                <?php foreach ($top_medicaments as $index => $med): ?>
-                                    <tr>
-                                        <td>
-                                            <strong><?php echo htmlspecialchars($med['nom']); ?></strong>
-                                        </td>
-                                        <td><?php echo $med['total_vendu']; ?> unités</td>
-                                        <td><?php echo number_format($med['chiffre_affaires'], 0, ',', ' '); ?> FCFA</td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
+                    <div class="sub">
+                        <?php echo $top_medicament ? $top_medicament['total_vendu'] . ' unités vendues' : ''; ?>
+                    </div>
                 </div>
             </div>
             
-            <!-- Alertes stock et Liste détaillée -->
-            <div class="two-columns">
-                <!-- Liste détaillée -->
-                <div class="dashboard-box">
-                    <div class="box-header">
-                        <h3 class="box-title">
-                            <i class="fas fa-list"></i>
-                            Détail des ventes
-                        </h3>
-                    </div>
-                    <?php if (empty($donnees)): ?>
-                        <p style="text-align: center; color: var(--gray); padding: 20px;">
-                            Aucune vente pour cette période
-                        </p>
-                    <?php else: ?>
-                        <div style="max-height: 400px; overflow-y: auto;">
-                            <table class="simple-table">
-                                <thead>
-                                    <tr>
-                                        <?php if ($periode === 'jour'): ?>
-                                            <th>Heure</th>
-                                            <th>Médicament</th>
-                                            <th>Quantité</th>
-                                            <th>Total</th>
-                                            <th>Client</th>
-                                        <?php else: ?>
-                                            <th>Date</th>
-                                            <th>Nombre de ventes</th>
-                                            <th>Quantité vendue</th>
-                                            <th>Chiffre d'affaires</th>
-                                        <?php endif; ?>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($donnees as $item): ?>
-                                        <tr>
-                                            <?php if ($periode === 'jour'): ?>
-                                                <td><?php echo date('H:i', strtotime($item['date_vente'])); ?></td>
-                                                <td><?php echo htmlspecialchars($item['medicament_nom']); ?></td>
-                                                <td><?php echo $item['quantite']; ?></td>
-                                                <td><?php echo number_format($item['total'], 0, ',', ' '); ?> FCFA</td>
-                                                <td><?php echo htmlspecialchars($item['client_nom'] ?? '--'); ?></td>
-                                            <?php else: ?>
-                                                <td><?php echo date('d/m/Y', strtotime($item['jour'])); ?></td>
-                                                <td><?php echo $item['nb_ventes']; ?></td>
-                                                <td><?php echo $item['total_quantite']; ?></td>
-                                                <td><strong><?php echo number_format($item['chiffre_affaires'], 0, ',', ' '); ?> FCFA</strong></td>
-                                            <?php endif; ?>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    <?php endif; ?>
+            <!-- PERFORMANCE DES EMPLOYÉS -->
+            <div class="dashboard-box" style="margin-bottom: 30px;">
+                <div class="box-header">
+                    <h3 class="box-title">
+                        <i class="fas fa-users"></i>
+                        Performance des employés
+                    </h3>
                 </div>
                 
-                <!-- Alertes stock -->
-                <div class="dashboard-box">
-                    <div class="box-header">
-                        <h3 class="box-title">
-                            <i class="fas fa-exclamation-triangle"></i>
-                            Alertes stock
-                        </h3>
-                    </div>
-                    <?php if (empty($alertes_stock)): ?>
-                        <p style="text-align: center; color: var(--success); padding: 20px;">
-                            <i class="fas fa-check-circle"></i> Aucune alerte stock
-                        </p>
-                    <?php else: ?>
-                        <div style="max-height: 400px; overflow-y: auto;">
-                            <table class="simple-table">
-                                <thead>
-                                    <tr>
-                                        <th>Médicament</th>
-                                        <th>Stock</th>
-                                        <th>Seuil</th>
-                                        <th>Péremption</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($alertes_stock as $med): ?>
-                                        <tr>
-                                            <td><?php echo htmlspecialchars($med['nom']); ?></td>
-                                            <td>
-                                                <span class="badge <?php echo $med['stock'] == 0 ? 'badge-danger' : 'badge-warning'; ?>">
-                                                    <?php echo $med['stock']; ?>
-                                                </span>
-                                            </td>
-                                            <td><?php echo $med['seuil_alerte']; ?></td>
-                                            <td>
-                                                <?php if ($med['date_peremption']): ?>
-                                                    <?php 
-                                                    $jours = $med['jours_restants'];
-                                                    if ($jours < 0): ?>
-                                                        <span style="color: var(--danger);">Périmé</span>
-                                                    <?php elseif ($jours <= 30): ?>
-                                                        <span style="color: var(--warning);"><?php echo $jours; ?> jours</span>
-                                                    <?php else: ?>
-                                                        <?php echo date('d/m/Y', strtotime($med['date_peremption'])); ?>
-                                                    <?php endif; ?>
-                                                <?php else: ?>
-                                                    --
-                                                <?php endif; ?>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    <?php endif; ?>
+                <table class="simple-table">
+                    <thead>
+                        <tr>
+                            <th>Employé</th>
+                            <th>Ventes</th>
+                            <th>Chiffre d'affaires</th>
+                            <th>Panier moyen</th>
+                            <th>Part (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php 
+                        $total_ca_global = array_sum(array_column($performance_vendeurs, 'total_ca'));
+                        foreach ($performance_vendeurs as $emp): 
+                            $pourcentage = $total_ca_global > 0 ? round(($emp['total_ca'] / $total_ca_global) * 100) : 0;
+                        ?>
+                        <tr>
+                            <td>
+                                <strong><?php echo htmlspecialchars($emp['prenom'] . ' ' . $emp['nom']); ?></strong>
+                            </td>
+                            <td><?php echo $emp['nb_ventes']; ?> vente(s)</td>
+                            <td><strong><?php echo number_format($emp['total_ca'], 0, ',', ' '); ?> FCFA</strong></td>
+                            <td><?php echo number_format($emp['panier_moyen'], 0, ',', ' '); ?> FCFA</td>
+                            <td>
+                                <div class="progress-bar">
+                                    <span><?php echo $pourcentage; ?>%</span>
+                                    <div class="bar">
+                                        <div class="fill" style="width: <?php echo $pourcentage; ?>%;"></div>
+                                    </div>
+                                </div>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Top 5 médicaments -->
+            <div class="dashboard-box" style="margin-bottom: 30px;">
+                <div class="box-header">
+                    <h3 class="box-title">
+                        <i class="fas fa-trophy"></i>
+                        Top 5 médicaments
+                    </h3>
                 </div>
+                
+                <table class="simple-table">
+                    <thead>
+                        <tr>
+                            <th>Médicament</th>
+                            <th>Quantité vendue</th>
+                            <th>Chiffre d'affaires</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($top_medicaments as $med): ?>
+                        <tr>
+                            <td><strong><?php echo htmlspecialchars($med['nom']); ?></strong></td>
+                            <td><?php echo $med['total_vendu']; ?> unités</td>
+                            <td><?php echo number_format($med['chiffre_affaires'], 0, ',', ' '); ?> FCFA</td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Détail des ventes (selon période) -->
+            <div class="dashboard-box">
+                <div class="box-header">
+                    <h3 class="box-title">
+                        <i class="fas fa-list"></i>
+                        Détail des ventes - <?php echo $titre_periode; ?>
+                    </h3>
+                </div>
+                
+                <?php if (empty($donnees)): ?>
+                    <p style="text-align: center; color: var(--gray); padding: 20px;">
+                        Aucune vente pour cette période
+                    </p>
+                <?php else: ?>
+                    <div style="overflow-x: auto;">
+                        <table class="simple-table">
+                            <thead>
+                                <tr>
+                                    <?php if ($periode === 'jour'): ?>
+                                        <th>Heure</th>
+                                        <th>Médicaments</th>
+                                        <th>Produits</th>
+                                        <th>Total</th>
+                                        <th>Client</th>
+                                    <?php else: ?>
+                                        <th>Date</th>
+                                        <th>Ventes</th>
+                                        <th>Quantité</th>
+                                        <th>Chiffre d'affaires</th>
+                                    <?php endif; ?>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($donnees as $item): ?>
+                                    <tr>
+                                        <?php if ($periode === 'jour'): ?>
+                                            <td><?php echo date('H:i', strtotime($item['date_vente'])); ?></td>
+                                            <td><?php echo htmlspecialchars(substr($item['medicaments'] ?? '', 0, 30)) . '...'; ?></td>
+                                            <td><?php echo $item['nb_produits']; ?></td>
+                                            <td><strong><?php echo number_format($item['total_global'], 0, ',', ' '); ?> FCFA</strong></td>
+                                            <td><?php echo htmlspecialchars($item['client_nom'] ?? '--'); ?></td>
+                                        <?php else: ?>
+                                            <td><?php echo date('d/m/Y', strtotime($item['jour'])); ?></td>
+                                            <td><?php echo $item['nb_ventes']; ?></td>
+                                            <td><?php echo $item['total_quantite']; ?></td>
+                                            <td><strong><?php echo number_format($item['chiffre_affaires'], 0, ',', ' '); ?> FCFA</strong></td>
+                                        <?php endif; ?>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
+            </div>
+            
+            <!-- Alertes stock -->
+            <div class="dashboard-box" style="margin-top: 30px;">
+                <div class="box-header">
+                    <h3 class="box-title">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        Alertes stock
+                    </h3>
+                </div>
+                
+                <?php if (empty($alertes_stock)): ?>
+                    <p style="text-align: center; color: var(--success); padding: 20px;">
+                        <i class="fas fa-check-circle"></i> Aucune alerte stock
+                    </p>
+                <?php else: ?>
+                    <div style="overflow-x: auto;">
+                        <table class="simple-table">
+                            <thead>
+                                <tr>
+                                    <th>Médicament</th>
+                                    <th>Stock</th>
+                                    <th>Seuil</th>
+                                    <th>Péremption</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($alertes_stock as $med): ?>
+                                    <tr>
+                                        <td><?php echo htmlspecialchars($med['nom']); ?></td>
+                                        <td>
+                                            <span class="badge <?php echo $med['stock'] == 0 ? 'badge-danger' : 'badge-warning'; ?>">
+                                                <?php echo $med['stock']; ?>
+                                            </span>
+                                        </td>
+                                        <td><?php echo $med['seuil_alerte']; ?></td>
+                                        <td>
+                                            <?php if ($med['date_peremption']): ?>
+                                                <?php 
+                                                $jours = $med['jours_restants'];
+                                                if ($jours < 0): ?>
+                                                    <span style="color: var(--danger);">Périmé</span>
+                                                <?php elseif ($jours <= 30): ?>
+                                                    <span style="color: var(--warning);"><?php echo $jours; ?> jours</span>
+                                                <?php else: ?>
+                                                    <?php echo date('d/m/Y', strtotime($med['date_peremption'])); ?>
+                                                <?php endif; ?>
+                                            <?php else: ?>
+                                                --
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
             </div>
         </main>
     </div>
@@ -847,91 +1039,6 @@ $alertes_stock = $stmt->fetchAll();
                 dateField.style.display = 'none';
                 moisField.style.display = 'block';
             }
-        }
-        
-        // Graphique Chart.js
-        document.addEventListener('DOMContentLoaded', function() {
-            const ctx = document.getElementById('ventesChart').getContext('2d');
-            
-            <?php if ($periode === 'jour'): ?>
-                // Données pour journée (par heure)
-                const labels = [
-                    '08:00', '09:00', '10:00', '11:00', '12:00',
-                    '13:00', '14:00', '15:00', '16:00', '17:00', '18:00'
-                ];
-                const data = [12, 19, 8, 15, 22, 18, 25, 12, 9, 14, 7];
-                
-            <?php elseif ($periode === 'semaine'): ?>
-                // Données pour semaine
-                const labels = [];
-                const data = [];
-                <?php foreach ($donnees as $item): ?>
-                    labels.push("<?php echo date('d/m', strtotime($item['jour'])); ?>");
-                    data.push(<?php echo $item['chiffre_affaires']; ?>);
-                <?php endforeach; ?>
-                
-            <?php elseif ($periode === 'mois'): ?>
-                // Données pour mois
-                const labels = [];
-                const data = [];
-                <?php foreach ($donnees as $item): ?>
-                    labels.push("<?php echo date('d/m', strtotime($item['jour'])); ?>");
-                    data.push(<?php echo $item['chiffre_affaires']; ?>);
-                <?php endforeach; ?>
-            <?php endif; ?>
-            
-            // Si pas de données, afficher message
-            if (data.length === 0) {
-                document.getElementById('ventesChart').parentElement.innerHTML = 
-                    '<p style="text-align: center; color: var(--gray); padding: 40px;">Aucune donnée disponible pour le graphique</p>';
-                return;
-            }
-            
-            const chart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'Chiffre d\'affaires (FCFA)',
-                        data: data,
-                        borderColor: '#3b82f6',
-                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            display: true,
-                            position: 'top'
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            ticks: {
-                                callback: function(value) {
-                                    return value.toLocaleString('fr-FR') + ' FCFA';
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        });
-        
-        // Export PDF (fonction de base)
-        function exportPDF() {
-            alert('Fonctionnalité d\'export PDF à implémenter');
-        }
-        
-        // Export Excel (fonction de base)
-        function exportExcel() {
-            alert('Fonctionnalité d\'export Excel à implémenter');
         }
     </script>
 </body>

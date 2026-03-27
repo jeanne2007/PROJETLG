@@ -25,11 +25,7 @@ if (!file_exists($upload_dir)) {
     mkdir($upload_dir, 0777, true);
 }
 
-// Chemin de ta photo
-$ma_photo = '../assets/images/Q.jpg';
-$photo_existe = file_exists($ma_photo);
-
-// Traitement modification informations
+// Traitement modification des informations
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modifier'])) {
     $prenom = trim($_POST['prenom']);
     $nom = trim($_POST['nom']);
@@ -47,6 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['modifier'])) {
             $_SESSION['user_email'] = $email;
             $message = 'Profil mis à jour avec succès';
             $message_type = 'success';
+            // Recharger les infos
             $stmt = $db->prepare("SELECT * FROM utilisateurs WHERE id = ?");
             $stmt->execute([$user_id]);
             $user = $stmt->fetch();
@@ -80,6 +77,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['changer_mdp'])) {
         $message = 'Mot de passe actuel incorrect';
         $message_type = 'error';
     }
+}
+
+// Traitement upload photo
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_photo'])) {
+    if (isset($_FILES['photo']) && $_FILES['photo']['error'] === 0) {
+        $allowed_types = ['image/jpeg', 'image/png', 'image/gif'];
+        $file_type = $_FILES['photo']['type'];
+        
+        if (in_array($file_type, $allowed_types)) {
+            $extension = pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION);
+            $new_filename = 'user_' . $user_id . '_' . time() . '.' . $extension;
+            $upload_path = $upload_dir . $new_filename;
+            
+            if (move_uploaded_file($_FILES['photo']['tmp_name'], $upload_path)) {
+                // Supprimer l'ancienne photo si elle existe
+                if (!empty($user['photo']) && file_exists($upload_dir . $user['photo'])) {
+                    unlink($upload_dir . $user['photo']);
+                }
+                
+                // Mettre à jour la base de données
+                $stmt = $db->prepare("UPDATE utilisateurs SET photo = ? WHERE id = ?");
+                if ($stmt->execute([$new_filename, $user_id])) {
+                    $message = 'Photo de profil mise à jour avec succès';
+                    $message_type = 'success';
+                    // Recharger les infos
+                    $stmt = $db->prepare("SELECT * FROM utilisateurs WHERE id = ?");
+                    $stmt->execute([$user_id]);
+                    $user = $stmt->fetch();
+                }
+            } else {
+                $message = 'Erreur lors de l\'upload de la photo';
+                $message_type = 'error';
+            }
+        } else {
+            $message = 'Format de fichier non autorisé (JPEG, PNG, GIF uniquement)';
+            $message_type = 'error';
+        }
+    } else {
+        $message = 'Veuillez sélectionner une photo';
+        $message_type = 'error';
+    }
+}
+
+// Traitement suppression photo
+if (isset($_GET['delete_photo'])) {
+    if (!empty($user['photo']) && file_exists($upload_dir . $user['photo'])) {
+        unlink($upload_dir . $user['photo']);
+    }
+    $stmt = $db->prepare("UPDATE utilisateurs SET photo = NULL WHERE id = ?");
+    $stmt->execute([$user_id]);
+    $message = 'Photo supprimée avec succès';
+    $message_type = 'success';
+    // Recharger les infos
+    $stmt = $db->prepare("SELECT * FROM utilisateurs WHERE id = ?");
+    $stmt->execute([$user_id]);
+    $user = $stmt->fetch();
 }
 ?>
 
@@ -176,9 +229,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['changer_mdp'])) {
             font-weight: bold;
         }
         
+        .photo-actions {
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            background: white;
+            padding: 8px 15px;
+            border-radius: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        
+        .photo-action-btn {
+            color: var(--primary);
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 10px;
+            border-radius: 20px;
+            transition: all 0.3s;
+            border: none;
+            background: none;
+        }
+        
+        .photo-action-btn:hover {
+            background: #f0f9ff;
+        }
+        
+        .photo-action-btn.delete {
+            color: var(--danger);
+        }
+        
+        .photo-action-btn.delete:hover {
+            background: #fee2e2;
+        }
+        
         .profile-header h1 {
             margin: 0;
             font-size: 28px;
+            margin-top: 30px;
             margin-bottom: 10px;
         }
         
@@ -339,6 +432,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['changer_mdp'])) {
             background: #f0f9ff;
         }
         
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+        
         .section {
             background: #f8fafc;
             padding: 25px;
@@ -394,19 +496,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['changer_mdp'])) {
             color: var(--dark);
         }
         
-        .photo-note {
-            background: #f0f9ff;
-            border-left: 4px solid #0ea5e9;
-            padding: 15px;
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            max-width: 400px;
+            width: 90%;
+        }
+        
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
             margin-top: 20px;
-            border-radius: 0 8px 8px 0;
-            font-size: 14px;
-            color: #0369a1;
         }
     </style>
 </head>
 <body>
-    <a href="index.php" class="back-link">
+    <a href="indexs.php" class="back-link">
         <i class="fas fa-arrow-left"></i> Retour au tableau de bord
     </a>
     
@@ -415,16 +536,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['changer_mdp'])) {
         <div class="profile-header">
             <div class="profile-avatar">
                 <div class="avatar-container">
-                    <?php if ($photo_existe): ?>
-                        <!-- Affiche TA photo -->
-                        <img src="<?php echo $ma_photo; ?>" 
+                    <?php 
+                    if (!empty($user['photo']) && file_exists($upload_dir . $user['photo'])): 
+                    ?>
+                        <img src="<?php echo $upload_dir . $user['photo']; ?>" 
                              alt="<?php echo htmlspecialchars($user['prenom']); ?>" 
                              class="avatar-img">
                     <?php else: ?>
-                        <!-- Initiales si pas de photo -->
                         <div class="avatar-placeholder">
-                            <?php echo strtoupper(substr($user['prenom'], 0, 1)); ?>
+                            <?php echo strtoupper(substr($user['prenom'], 0, 1) . substr($user['nom'], 0, 1)); ?>
                         </div>
+                    <?php endif; ?>
+                </div>
+                
+                <!-- Boutons pour gérer la photo -->
+                <div class="photo-actions">
+                    <button class="photo-action-btn" onclick="showUploadModal()">
+                        <i class="fas fa-camera"></i> Changer
+                    </button>
+                    <?php if (!empty($user['photo'])): ?>
+                    <a href="?delete_photo=1" class="photo-action-btn delete" onclick="return confirm('Supprimer votre photo de profil ?')">
+                        <i class="fas fa-trash"></i> Supprimer
+                    </a>
                     <?php endif; ?>
                 </div>
             </div>
@@ -488,8 +621,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['changer_mdp'])) {
                         </button>
                     </form>
                 </div>
-                
-                
             </div>
             
             <!-- Onglet 2 : Mot de passe -->
@@ -577,10 +708,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['changer_mdp'])) {
         </div>
     </div>
     
+    <!-- Modal d'upload de photo -->
+    <div id="uploadModal" class="modal">
+        <div class="modal-content">
+            <h2 style="margin-bottom: 20px;">
+                <i class="fas fa-camera"></i> Changer la photo
+            </h2>
+            
+            <form method="POST" action="" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label>Sélectionner une photo</label>
+                    <input type="file" name="photo" class="form-control" accept="image/jpeg,image/png,image/gif" required>
+                    <small style="color: var(--gray); display: block; margin-top: 5px;">
+                        Formats acceptés : JPEG, PNG, GIF
+                    </small>
+                </div>
+                
+                <div class="modal-actions">
+                    <button type="button" onclick="hideUploadModal()" class="btn btn-outline">
+                        <i class="fas fa-times"></i> Annuler
+                    </button>
+                    <button type="submit" name="upload_photo" class="btn btn-primary">
+                        <i class="fas fa-upload"></i> Uploader
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
     <script>
         // Gestion des onglets
         function switchTab(tabName) {
-            // Désactiver tous les onglets
             document.querySelectorAll('.tab').forEach(tab => {
                 tab.classList.remove('active');
             });
@@ -589,44 +747,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['changer_mdp'])) {
                 content.classList.remove('active');
             });
             
-            // Activer l'onglet sélectionné
             event.target.classList.add('active');
             document.getElementById('tab-' + tabName).classList.add('active');
         }
         
-        // Validation du formulaire
+        // Modal upload
+        function showUploadModal() {
+            document.getElementById('uploadModal').style.display = 'flex';
+        }
+        
+        function hideUploadModal() {
+            document.getElementById('uploadModal').style.display = 'none';
+        }
+        
+        window.onclick = function(event) {
+            const modal = document.getElementById('uploadModal');
+            if (event.target == modal) {
+                hideUploadModal();
+            }
+        }
+        
+        // Validation du formulaire mot de passe
         document.addEventListener('DOMContentLoaded', function() {
-            // Validation mot de passe
-            const passwordForm = document.querySelector('form[name="changer_mdp"]');
+            const passwordForm = document.querySelector('form[method="POST"]');
             if (passwordForm) {
                 passwordForm.addEventListener('submit', function(e) {
                     const newPass = this.querySelector('input[name="new_password"]');
                     const confirmPass = this.querySelector('input[name="confirm_password"]');
                     
-                    if (newPass.value !== confirmPass.value) {
+                    if (newPass && confirmPass && newPass.value !== confirmPass.value) {
                         e.preventDefault();
                         alert('Les mots de passe ne correspondent pas !');
                         confirmPass.focus();
                     }
-                    
-                    if (newPass.value.length < 6) {
-                        e.preventDefault();
-                        alert('Le mot de passe doit contenir au moins 6 caractères !');
-                        newPass.focus();
-                    }
-                });
-            }
-            
-            // Animation pour la photo
-            const avatar = document.querySelector('.avatar-container');
-            if (avatar) {
-                avatar.addEventListener('mouseenter', function() {
-                    this.style.transform = 'scale(1.05)';
-                    this.style.transition = 'transform 0.3s ease';
-                });
-                
-                avatar.addEventListener('mouseleave', function() {
-                    this.style.transform = 'scale(1)';
                 });
             }
         });

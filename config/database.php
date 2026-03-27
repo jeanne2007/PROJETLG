@@ -4,7 +4,7 @@
 
 class Database {
     private $host = "127.0.0.1";
-    private $port = "3307";
+    private $port = "3306";
     private $db_name = "lgpharma";
     private $username = "root";
     private $password = "";
@@ -14,7 +14,7 @@ class Database {
         $this->conn = null;
 
         try {
-            // DSN pour MariaDB sur port 3307
+            // DSN pour MariaDB sur port 3306
             $dsn = "mysql:host=" . $this->host . ":" . $this->port . ";dbname=" . $this->db_name . ";charset=utf8mb4";
             
             $this->conn = new PDO($dsn, $this->username, $this->password);
@@ -32,7 +32,7 @@ class Database {
                 <p><strong>Vérifie :</strong></p>
                 <ul>
                     <li>WAMP/XAMPP est démarré</li>
-                    <li>MySQL tourne sur le port 3307</li>
+                    <li>MySQL tourne sur le port 3306</li>
                     <li>La base 'lgpharma' existe dans phpMyAdmin</li>
                 </ul>
                 <p><a href='http://localhost/phpmyadmin' target='_blank'>🔗 Ouvrir phpMyAdmin</a></p>

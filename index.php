@@ -3,7 +3,7 @@ session_start();
 
 // Si déjà connecté, aller au dashboard
 if (isset($_SESSION['user_id'])) {
-    header('Location: dashboard/index.php');
+    header('Location: dashboard/indexs.php');
     exit();
 }
 
@@ -25,21 +25,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         try {
             // Chercher l'utilisateur
-            $stmt = $db->prepare("SELECT id, prenom, password FROM utilisateurs WHERE email = ?");
+            $stmt = $db->prepare("SELECT id, prenom, password, role FROM utilisateurs WHERE email = ?");
             $stmt->execute([$email]);
             $user = $stmt->fetch();
             
             if ($user) {
                 // Vérifier le mot de passe
-                // Pour le test, on accepte le mot de passe en clair
-                if ($password === 'Jeanne123' || password_verify($password, $user['password'])) {
+                if (password_verify($password, $user['password'])) {
                     // Connexion réussie
                     $_SESSION['user_id'] = $user['id'];
                     $_SESSION['user_prenom'] = $user['prenom'];
                     $_SESSION['user_email'] = $email;
+                    $_SESSION['user_role'] = $user['role'];
+                    
+                    // AJOUT DU LOG DE CONNEXION
+                    require_once 'includes/functions.php';
+                    logAction($db, $user['id'], 'connexion', 'Connexion à l\'application');
                     
                     // Rediriger vers le dashboard
-                    header('Location: dashboard/index.php');
+                    header('Location: dashboard/indexs.php');
                     exit();
                 } else {
                     $message = 'Mot de passe incorrect';
@@ -62,6 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
     <title>Connexion - LG Pharma</title>
     <style>
         * {
@@ -95,7 +100,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         .logo h1 {
-            color: #2563eb;
+            color: #b83f6d;
             font-size: 28px;
             margin-bottom: 10px;
         }
@@ -137,7 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         .btn:hover {
-            background-color: #1d4ed8;
+            background-color: #8b7639;
         }
         
         .message {
@@ -191,15 +196,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
             
             <div class="form-group">
-                <label for="password">Mot de passe :</label>
+                <label for="password">Mot de passe </label>
                 <input type="password" id="password" name="password" required 
                        placeholder="Votre mot de passe">
             </div>
             
             <button type="submit" class="btn">Se connecter</button>
         </form>
-        
-       
     </div>
 </body>
 </html>

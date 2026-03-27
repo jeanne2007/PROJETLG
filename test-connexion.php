@@ -3,7 +3,7 @@ require_once 'config/database.php';
 
 try {
     $db = getDB();
-    echo "<h2 style='color:green;'>✅ Connexion réussie à LG PHARMA !</h2>";
+    echo "<h2 style='color:green;'> Connexion réussie à LG PHARMA !</h2>";
     
     $stmt = $db->query("SELECT valeur FROM parametres WHERE cle = 'nom_pharmacie'");
     $pharmacie = $stmt->fetch();

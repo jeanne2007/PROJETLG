@@ -25,50 +25,69 @@ if (!$user) {
     exit();
 }
 
-// Récupérer statistiques
-// 1. Nombre de médicaments
-$stmt = $db->query("SELECT COUNT(*) as total FROM medicaments");
-$total_medicaments = $stmt->fetch()['total'];
+// Stocker le rôle en session
+$_SESSION['user_role'] = $user['role'];
 
-// 2. Stock bas (inférieur au seuil)
-$stmt = $db->query("SELECT COUNT(*) as total FROM medicaments WHERE stock <= seuil_alerte AND stock > 0");
-$stock_bas = $stmt->fetch()['total'];
+// Récupérer statistiques (pour admin seulement)
+$total_medicaments = 0;
+$stock_bas = 0;
+$ventes_aujourdhui = 0;
+$chiffre_affaires = 0;
+$alertes_non_lues = 0;
+$alertes = [];
+$dernieres_ventes = [];
 
-// 3. Ventes aujourd'hui
-$today = date('Y-m-d');
-$stmt = $db->prepare("SELECT COUNT(*) as total FROM ventes WHERE DATE(date_vente) = ?");
-$stmt->execute([$today]);
-$ventes_aujourdhui = $stmt->fetch()['total'];
+// Si l'utilisateur est admin, on récupère toutes les stats
+if ($user['role'] === 'admin') {
+    // 1. Nombre de médicaments
+    $stmt = $db->query("SELECT COUNT(*) as total FROM medicaments");
+    $total_medicaments = $stmt->fetch()['total'];
 
-// 4. Chiffre d'affaires aujourd'hui
-$stmt = $db->prepare("SELECT SUM(total) as total FROM ventes WHERE DATE(date_vente) = ?");
-$stmt->execute([$today]);
-$chiffre_affaires = $stmt->fetch()['total'] ?? 0;
+    // 2. Stock bas (inférieur au seuil)
+    $stmt = $db->query("SELECT COUNT(*) as total FROM medicaments WHERE stock <= seuil_alerte AND stock > 0");
+    $stock_bas = $stmt->fetch()['total'];
 
-// 5. Alertes non lues
-$stmt = $db->query("SELECT COUNT(*) as total FROM alertes WHERE vue = FALSE");
-$alertes_non_lues = $stmt->fetch()['total'];
+    // 3. Ventes aujourd'hui
+    $today = date('Y-m-d');
+    $stmt = $db->prepare("SELECT COUNT(*) as total FROM ventes WHERE DATE(date_vente) = ?");
+    $stmt->execute([$today]);
+    $ventes_aujourdhui = $stmt->fetch()['total'];
 
-// Récupérer dernières alertes
-$stmt = $db->query("
-    SELECT a.*, m.nom as medicament_nom 
-    FROM alertes a 
-    LEFT JOIN medicaments m ON a.medicament_id = m.id 
-    ORDER BY a.date_creation DESC 
-    LIMIT 5
-");
-$alertes = $stmt->fetchAll();
+    // 4. Chiffre d'affaires aujourd'hui
+    $stmt = $db->prepare("SELECT SUM(total_global) as total FROM ventes WHERE DATE(date_vente) = ?");
+    $stmt->execute([$today]);
+    $chiffre_affaires = $stmt->fetch()['total'] ?? 0;
 
-// Récupérer dernières ventes
-$stmt = $db->query("
-    SELECT v.*, m.nom as medicament_nom, u.prenom as vendeur_nom
-    FROM ventes v
-    LEFT JOIN medicaments m ON v.medicament_id = m.id
-    LEFT JOIN utilisateurs u ON v.vendeur_id = u.id
-    ORDER BY v.date_vente DESC 
-    LIMIT 5
-");
-$dernieres_ventes = $stmt->fetchAll();
+    // 5. Alertes non lues
+    $stmt = $db->query("SELECT COUNT(*) as total FROM alertes WHERE vue = FALSE");
+    $alertes_non_lues = $stmt->fetch()['total'];
+
+    // Récupérer dernières alertes
+    $stmt = $db->query("
+        SELECT a.*, m.nom as medicament_nom 
+        FROM alertes a 
+        LEFT JOIN medicaments m ON a.medicament_id = m.id 
+        ORDER BY a.date_creation DESC 
+        LIMIT 5
+    ");
+    $alertes = $stmt->fetchAll();
+
+    // Récupérer dernières ventes
+    $stmt = $db->query("
+        SELECT v.*, 
+               GROUP_CONCAT(DISTINCT m.nom SEPARATOR ', ') as medicaments,
+               COUNT(vl.id) as nb_produits,
+               u.prenom as vendeur_nom
+        FROM ventes v
+        LEFT JOIN ventes_lignes vl ON v.id = vl.vente_id
+        LEFT JOIN medicaments m ON vl.medicament_id = m.id
+        LEFT JOIN utilisateurs u ON v.vendeur_id = u.id
+        GROUP BY v.id
+        ORDER BY v.date_vente DESC 
+        LIMIT 5
+    ");
+    $dernieres_ventes = $stmt->fetchAll();
+}
 ?>
 
 <!DOCTYPE html>
@@ -303,18 +322,12 @@ $dernieres_ventes = $stmt->fetchAll();
             letter-spacing: 0.5px;
         }
         
-        /* GRID 2 COLONNES */
-        .two-columns {
+        /* GRILLE ALERTES (2 colonnes) */
+        .alertes-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 30px;
+            gap: 20px;
             margin-bottom: 30px;
-        }
-        
-        @media (max-width: 1024px) {
-            .two-columns {
-                grid-template-columns: 1fr;
-            }
         }
         
         /* BOXES */
@@ -434,7 +447,20 @@ $dernieres_ventes = $stmt->fetchAll();
             transform: translateY(-2px);
         }
         
-        /* RESPONSIVE */
+        /* GRID 2 COLONNES */
+        .two-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        @media (max-width: 1024px) {
+            .two-columns, .alertes-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        
         @media (max-width: 768px) {
             .sidebar {
                 width: 70px;
@@ -458,6 +484,17 @@ $dernieres_ventes = $stmt->fetchAll();
                 grid-template-columns: 1fr;
             }
         }
+        
+        /* LIEN VOIR TOUT */
+        .voir-tout {
+            color: var(--primary);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .voir-tout:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
@@ -472,35 +509,57 @@ $dernieres_ventes = $stmt->fetchAll();
             </div>
             
             <nav class="sidebar-nav">
-                <a href="index.php" class="nav-item active">
-                    <i class="fas fa-home"></i>
-                    <span class="nav-text">Tableau de bord</span>
+                <!-- MENU POUR ADMIN -->
+                <?php if ($user['role'] === 'admin'): ?>
+                <a href="indexs.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'indexs.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-home"></i> <span class="nav-text">Tableau de bord</span>
                 </a>
-                <a href="medicaments.php" class="nav-item">
-                    <i class="fas fa-capsules"></i>
-                    <span class="nav-text">Médicaments</span>
+                <a href="medicament.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'medicament.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-capsules"></i> <span class="nav-text">Médicaments</span>
                 </a>
-                <a href="ventes.php" class="nav-item">
-                    <i class="fas fa-shopping-cart"></i>
-                    <span class="nav-text">Ventes</span>
+                <a href="vente.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'vente.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-shopping-cart"></i> <span class="nav-text">Ventes</span>
                 </a>
-                <a href="rapports.php" class="nav-item">
-                    <i class="fas fa-chart-bar"></i>
-                    <span class="nav-text">Rapports</span>
+                <a href="rapport.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'rapport.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-chart-bar"></i> <span class="nav-text">Rapports</span>
                 </a>
-                <a href="profile.php" class="nav-item">
-                    <i class="fas fa-user-cog"></i>
-                    <span class="nav-text">Mon profil</span>
+                <a href="profiles.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'profiles.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-user-cog"></i> <span class="nav-text">Mon profil</span>
                 </a>
-                <a href="parametres.php" class="nav-item">
-                    <i class="fas fa-cog"></i>
-                    <span class="nav-text">Paramètres</span>
+                <a href="parametre.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'parametre.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-cog"></i> <span class="nav-text">Paramètres</span>
                 </a>
+                <a href="utilisateur.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'utilisateur.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-users"></i> <span class="nav-text">Utilisateurs</span>
+                </a>
+                <a href="journals.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'journals.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-history"></i> <span class="nav-text">Journal</span>
+                </a>
+                <a href="alerte.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'alerte.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-bell"></i> <span class="nav-text">Alertes</span>
+                </a>
+                
+                <!-- MENU POUR EMPLOYÉ (Sophie) -->
+                <?php elseif ($user['role'] === 'employe'): ?>
+                <a href="vente.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'vente.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-shopping-cart"></i> <span class="nav-text">Ventes</span>
+                </a>
+                <a href="profiles.php" class="nav-item <?php echo basename($_SERVER['PHP_SELF']) == 'profiles.php' ? 'active' : ''; ?>">
+                    <i class="fas fa-user-cog"></i> <span class="nav-text">Mon profil</span>
+                </a>
+                <?php endif; ?>
             </nav>
             
             <div class="user-info">
                 <div class="user-avatar">
-                    <?php echo strtoupper(substr($user['prenom'], 0, 1)); ?>
+                    <?php 
+                    // Afficher la photo ou les initiales
+                    if (!empty($user['photo']) && file_exists('../assets/images/profiles/' . $user['photo'])) {
+                        echo '<img src="../assets/images/profiles/' . $user['photo'] . '" style="width:40px; height:40px; border-radius:50%; object-fit:cover;">';
+                    } else {
+                        echo strtoupper(substr($user['prenom'], 0, 1));
+                    }
+                    ?>
                 </div>
                 <div class="user-details">
                     <h4><?php echo htmlspecialchars($user['prenom']); ?></h4>
@@ -522,7 +581,7 @@ $dernieres_ventes = $stmt->fetchAll();
                         Tableau de bord
                     </h1>
                     <div class="welcome-message">
-                        Bonjour, <?php echo htmlspecialchars($user['prenom']); ?> !  Bienvenue sur LG Pharma
+                        Bonjour, <?php echo htmlspecialchars($user['prenom']); ?> ! Bienvenue sur LG Pharma
                     </div>
                 </div>
                 <div class="date-display">
@@ -533,6 +592,9 @@ $dernieres_ventes = $stmt->fetchAll();
                     ?> - Kinshasa
                 </div>
             </div>
+            
+            <!-- CONTENU POUR ADMIN -->
+            <?php if ($user['role'] === 'admin'): ?>
             
             <!-- Cartes de statistiques -->
             <div class="stats-grid">
@@ -585,6 +647,90 @@ $dernieres_ventes = $stmt->fetchAll();
                 </div>
             </div>
             
+            <!-- SECTION ALERTES INTELLIGENTES -->
+            <?php
+            $alertes_stock_bas = getAlertesStockBas($db, 5);
+            $alertes_peremption = getAlertesPeremption($db, 30, 5);
+            ?>
+            
+            <div class="alertes-grid">
+                <!-- Alertes stock bas -->
+                <div class="dashboard-box">
+                    <div class="box-header">
+                        <h3 class="box-title">
+                            <i class="fas fa-exclamation-triangle" style="color: var(--warning);"></i>
+                            Stock bas
+                        </h3>
+                        <a href="alerte.php" class="voir-tout">Voir tout →</a>
+                    </div>
+                    
+                    <?php if (empty($alertes_stock_bas)): ?>
+                        <p style="color: var(--success);"><i class="fas fa-check-circle"></i> Aucun stock critique</p>
+                    <?php else: ?>
+                        <table class="simple-table">
+                            <thead>
+                                <tr>
+                                    <th>Médicament</th>
+                                    <th>Stock</th>
+                                    <th>Seuil</th>
+                                    <th>Manque</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($alertes_stock_bas as $med): ?>
+                                <tr>
+                                    <td><?php echo htmlspecialchars($med['nom']); ?></td>
+                                    <td><span class="badge badge-warning"><?php echo $med['stock']; ?></span></td>
+                                    <td><?php echo $med['seuil_alerte']; ?></td>
+                                    <td><strong style="color: var(--danger);"><?php echo abs($med['quantite_manquante']); ?></strong></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    <?php endif; ?>
+                </div>
+                
+                <!-- Alertes péremption -->
+                <div class="dashboard-box">
+                    <div class="box-header">
+                        <h3 class="box-title">
+                            <i class="fas fa-calendar-times" style="color: var(--danger);"></i>
+                            Péremption imminente
+                        </h3>
+                        <a href="alerte.php" class="voir-tout">Voir tout →</a>
+                    </div>
+                    
+                    <?php if (empty($alertes_peremption)): ?>
+                        <p style="color: var(--success);"><i class="fas fa-check-circle"></i> Aucune péremption critique</p>
+                    <?php else: ?>
+                        <table class="simple-table">
+                            <thead>
+                                <tr>
+                                    <th>Médicament</th>
+                                    <th>Stock</th>
+                                    <th>Péremption</th>
+                                    <th>Jours restants</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($alertes_peremption as $med): ?>
+                                <tr>
+                                    <td><?php echo htmlspecialchars($med['nom']); ?></td>
+                                    <td><?php echo $med['stock']; ?></td>
+                                    <td><?php echo date('d/m/Y', strtotime($med['date_peremption'])); ?></td>
+                                    <td>
+                                        <span class="badge <?php echo $med['jours_restants'] <= 7 ? 'badge-danger' : 'badge-warning'; ?>">
+                                            <?php echo $med['jours_restants']; ?> jours
+                                        </span>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    <?php endif; ?>
+                </div>
+            </div>
+            
             <!-- Actions rapides -->
             <div class="quick-actions">
                 <h2 class="section-title">
@@ -592,7 +738,7 @@ $dernieres_ventes = $stmt->fetchAll();
                     Actions rapides
                 </h2>
                 <div class="actions-grid">
-                    <a href="medicaments.php?action=ajouter" class="action-btn">
+                    <a href="medicament.php?action=ajouter" class="action-btn">
                         <i class="fas fa-plus-circle"></i>
                         <div class="action-text">
                             <h3>Ajouter médicament</h3>
@@ -600,7 +746,7 @@ $dernieres_ventes = $stmt->fetchAll();
                         </div>
                     </a>
                     
-                    <a href="ventes.php?action=nouvelle" class="action-btn">
+                    <a href="vente.php?action=nouvelle" class="action-btn">
                         <i class="fas fa-cash-register"></i>
                         <div class="action-text">
                             <h3>Nouvelle vente</h3>
@@ -608,7 +754,7 @@ $dernieres_ventes = $stmt->fetchAll();
                         </div>
                     </a>
                     
-                    <a href="rapports.php" class="action-btn">
+                    <a href="rapport.php" class="action-btn">
                         <i class="fas fa-file-invoice"></i>
                         <div class="action-text">
                             <h3>Voir rapports</h3>
@@ -616,7 +762,7 @@ $dernieres_ventes = $stmt->fetchAll();
                         </div>
                     </a>
                     
-                    <a href="profile.php" class="action-btn">
+                    <a href="profiles.php" class="action-btn">
                         <i class="fas fa-user-edit"></i>
                         <div class="action-text">
                             <h3>Mon profil</h3>
@@ -626,9 +772,9 @@ $dernieres_ventes = $stmt->fetchAll();
                 </div>
             </div>
             
-            <!-- Deux colonnes : Alertes et Dernières ventes -->
+            <!-- Deux colonnes : Alertes (anciennes) et Dernières ventes -->
             <div class="two-columns">
-                <!-- Alertes -->
+                <!-- Alertes anciennes -->
                 <div class="dashboard-box">
                     <div class="box-header">
                         <h3 class="box-title">
@@ -682,7 +828,7 @@ $dernieres_ventes = $stmt->fetchAll();
                             <i class="fas fa-history"></i>
                             Dernières ventes
                         </h3>
-                        <a href="ventes.php" style="color: var(--primary); text-decoration: none; font-size: 14px;">
+                        <a href="vente.php" style="color: var(--primary); text-decoration: none; font-size: 14px;">
                             Voir tout <i class="fas fa-arrow-right"></i>
                         </a>
                     </div>
@@ -695,8 +841,8 @@ $dernieres_ventes = $stmt->fetchAll();
                         <table class="simple-table">
                             <thead>
                                 <tr>
-                                    <th>Médicament</th>
-                                    <th>Quantité</th>
+                                    <th>Médicaments</th>
+                                    <th>Produits</th>
                                     <th>Total</th>
                                 </tr>
                             </thead>
@@ -704,11 +850,13 @@ $dernieres_ventes = $stmt->fetchAll();
                                 <?php foreach ($dernieres_ventes as $vente): ?>
                                     <tr>
                                         <td>
-                                            <strong><?php echo htmlspecialchars($vente['medicament_nom']); ?></strong><br>
-                                            <small style="color: var(--gray);">par <?php echo htmlspecialchars($vente['vendeur_nom']); ?></small>
+                                            <strong><?php echo htmlspecialchars($vente['medicaments'] ?? 'Plusieurs produits'); ?></strong><br>
+                                            <small style="color: var(--gray);">
+                                                par <?php echo htmlspecialchars($vente['vendeur_nom']); ?>
+                                            </small>
                                         </td>
-                                        <td><?php echo $vente['quantite']; ?></td>
-                                        <td><strong><?php echo number_format($vente['total'], 0, ',', ' '); ?> FCFA</strong></td>
+                                        <td><?php echo $vente['nb_produits']; ?> produit(s)</td>
+                                        <td><strong><?php echo number_format($vente['total_global'], 0, ',', ' '); ?> FCFA</strong></td>
                                     </tr>
                                 <?php endforeach; ?>
                             </tbody>
@@ -716,13 +864,24 @@ $dernieres_ventes = $stmt->fetchAll();
                     <?php endif; ?>
                 </div>
             </div>
+            
+            <!-- CONTENU POUR EMPLOYÉ -->
+            <?php elseif ($user['role'] === 'employe'): ?>
+            <div style="text-align: center; padding: 50px; background: white; border-radius: 10px;">
+                <i class="fas fa-shopping-cart" style="font-size: 80px; color: var(--primary); margin-bottom: 20px;"></i>
+                <h2>Bienvenue sur votre espace vente</h2>
+                <p style="color: var(--gray); margin: 20px 0;">Utilisez le menu à gauche pour accéder à vos ventes et à votre profil.</p>
+                <a href="vente.php" style="display: inline-block; padding: 15px 30px; background: var(--primary); color: white; text-decoration: none; border-radius: 5px;">
+                    <i class="fas fa-shopping-cart"></i> Aller aux ventes
+                </a>
+            </div>
+            <?php endif; ?>
         </main>
     </div>
     
     <script>
         // Animation des cartes
         document.addEventListener('DOMContentLoaded', function() {
-            // Animer l'apparition
             const cards = document.querySelectorAll('.stat-card, .action-btn, .dashboard-box');
             cards.forEach((card, index) => {
                 card.style.opacity = '0';
@@ -738,7 +897,7 @@ $dernieres_ventes = $stmt->fetchAll();
             // Actualiser la page toutes les 5 minutes pour les stats
             setTimeout(() => {
                 window.location.reload();
-            }, 5 * 60 * 1000); // 5 minutes
+            }, 5 * 60 * 1000);
         });
     </script>
 </body>

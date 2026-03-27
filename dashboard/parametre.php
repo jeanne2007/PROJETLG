@@ -6,20 +6,14 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
+// 🔐 Vérifier que l'utilisateur est ADMIN
+require_once '../includes/check_role.php';
+checkAdmin(); // Seul l'admin peut accéder aux paramètres
+
 require_once '../config/database.php';
 require_once '../includes/functions.php';
 
 $db = getDB();
-
-// Vérifier que l'utilisateur est admin
-$stmt = $db->prepare("SELECT role FROM utilisateurs WHERE id = ?");
-$stmt->execute([$_SESSION['user_id']]);
-$user = $stmt->fetch();
-
-if ($user['role'] !== 'admin') {
-    header("Location: index.php?message=Accès réservé aux administrateurs&type=error");
-    exit();
-}
 
 // Récupérer tous les paramètres
 $parametres = $db->query("SELECT * FROM parametres ORDER BY cle")->fetchAll();
@@ -30,12 +24,17 @@ $message_type = '';
 // Traitement des modifications
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['modifier_parametres'])) {
+        $modifications = [];
         foreach ($_POST['parametres'] as $cle => $valeur) {
             $stmt = $db->prepare("UPDATE parametres SET valeur = ? WHERE cle = ?");
             $stmt->execute([trim($valeur), $cle]);
+            $modifications[] = "$cle => " . trim($valeur);
         }
         $message = 'Paramètres mis à jour avec succès';
         $message_type = 'success';
+        
+        // ✅ LOG : Modification des paramètres
+        logAction($db, $_SESSION['user_id'], 'parametres', 'Modification des paramètres système : ' . implode(', ', $modifications));
         
         // Recharger les paramètres
         $parametres = $db->query("SELECT * FROM parametres ORDER BY cle")->fetchAll();
@@ -49,6 +48,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$nom]);
                 $message = 'Catégorie ajoutée avec succès';
                 $message_type = 'success';
+                
+                // ✅ LOG : Ajout de catégorie
+                logAction($db, $_SESSION['user_id'], 'ajout_categorie', 'Ajout de la catégorie : ' . $nom);
+                
             } catch (Exception $e) {
                 $message = 'Cette catégorie existe déjà';
                 $message_type = 'error';
@@ -57,10 +60,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     if (isset($_POST['supprimer_categorie'])) {
+        $categorie_id = $_POST['categorie_id'];
+        
+        // Récupérer le nom de la catégorie avant suppression
+        $stmt = $db->prepare("SELECT nom FROM categories WHERE id = ?");
+        $stmt->execute([$categorie_id]);
+        $categorie_nom = $stmt->fetch()['nom'];
+        
         $stmt = $db->prepare("DELETE FROM categories WHERE id = ?");
-        $stmt->execute([$_POST['categorie_id']]);
+        $stmt->execute([$categorie_id]);
         $message = 'Catégorie supprimée avec succès';
         $message_type = 'success';
+        
+        // ✅ LOG : Suppression de catégorie
+        logAction($db, $_SESSION['user_id'], 'suppression_categorie', 'Suppression de la catégorie : ' . $categorie_nom);
     }
 }
 
@@ -460,29 +473,41 @@ $user_info = $stmt->fetch();
             </div>
             
             <nav class="sidebar-nav">
-                <a href="index.php" class="nav-item">
+                <a href="indexs.php" class="nav-item">
                     <i class="fas fa-home"></i>
                     <span class="nav-text">Tableau de bord</span>
                 </a>
-                <a href="medicaments.php" class="nav-item">
+                <a href="medicament.php" class="nav-item">
                     <i class="fas fa-capsules"></i>
                     <span class="nav-text">Médicaments</span>
                 </a>
-                <a href="ventes.php" class="nav-item">
+                <a href="vente.php" class="nav-item">
                     <i class="fas fa-shopping-cart"></i>
                     <span class="nav-text">Ventes</span>
                 </a>
-                <a href="rapports.php" class="nav-item">
+                <a href="rapport.php" class="nav-item">
                     <i class="fas fa-chart-bar"></i>
                     <span class="nav-text">Rapports</span>
                 </a>
-                <a href="profile.php" class="nav-item">
+                <a href="profiles.php" class="nav-item">
                     <i class="fas fa-user-cog"></i>
                     <span class="nav-text">Mon profil</span>
                 </a>
-                <a href="parametres.php" class="nav-item active">
+                <a href="parametre.php" class="nav-item active">
                     <i class="fas fa-cog"></i>
                     <span class="nav-text">Paramètres</span>
+                </a>
+                <a href="utilisateur.php" class="nav-item">
+                    <i class="fas fa-users"></i>
+                    <span class="nav-text">Utilisateurs</span>
+                </a>
+                <a href="journals.php" class="nav-item">
+                    <i class="fas fa-history"></i>
+                    <span class="nav-text">Journal</span>
+                </a>
+                <a href="alerte.php" class="nav-item">
+                    <i class="fas fa-bell"></i>
+                    <span class="nav-text">Alertes</span>
                 </a>
             </nav>
             
